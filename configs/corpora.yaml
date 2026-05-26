@@ -1,0 +1,15 @@
+corpora:
+  arxiv:
+    raw_path: data/raw/arxiv/arxiv-4k.jsonl
+  commoncrawl:
+    raw_path: data/raw/commoncrawl/cc-10k.jsonl
+  govreport:
+    raw_path: data/raw/govreport/govreport-20k.jsonl
+  enwiki:
+    raw_path: data/raw/enwiki/enwiki-pages-110k.jsonl
+  pii:
+    raw_path: data/raw/pii/pii-43k.jsonl
+  pii_docpii:
+    raw_path: data/raw/pii/docpii-contextual-1k.jsonl
+  pii_synthetic:
+    raw_path: data/raw/pii/synthetic-anonymizer-8k.jsonl

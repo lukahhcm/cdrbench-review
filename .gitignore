@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+.venv/
+.venv-*/
+data/raw/
+data/processed/
+data/benchmark/
+data/benchmark_v2/
+data/evaluation/
+data/evaluation_v2/
+data-juicer/
+*.log
+.DS_Store

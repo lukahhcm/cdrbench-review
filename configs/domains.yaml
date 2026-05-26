@@ -1,0 +1,116 @@
+shared_operators:
+  - name: alphanumeric_filter
+    kind: filter
+  - name: average_line_length_filter
+    kind: filter
+  - name: character_repetition_filter
+    kind: filter
+  - name: flagged_words_filter
+    kind: filter
+  - name: maximum_line_length_filter
+    kind: filter
+  - name: stopwords_filter
+    kind: filter
+  - name: text_length_filter
+    kind: filter
+  - name: word_repetition_filter
+    kind: filter
+  - name: words_num_filter
+    kind: filter
+
+domains:
+  web:
+    description: Web crawl compositional data refinement
+    specific_operators:
+      - name: clean_copyright_mapper
+        kind: mapper
+      - name: clean_html_mapper
+        kind: mapper
+      - name: clean_links_mapper
+        kind: mapper
+      - name: extract_tables_from_html_mapper
+        kind: mapper
+        params:
+          output_mode: text
+          text_output_format: tsv
+      - name: fix_unicode_mapper
+        kind: mapper
+      - name: punctuation_normalization_mapper
+        kind: mapper
+      - name: remove_specific_chars_mapper
+        kind: mapper
+      - name: remove_words_with_incorrect_substrings_mapper
+        kind: mapper
+      - name: whitespace_normalization_mapper
+        kind: mapper
+
+  arxiv:
+    description: Scientific source compositional data refinement
+    specific_operators:
+      - name: clean_copyright_mapper
+        kind: mapper
+      - name: expand_macro_mapper
+        kind: mapper
+      - name: fix_unicode_mapper
+        kind: mapper
+      - name: latex_figure_context_extractor_mapper
+        kind: mapper
+        params:
+          output_mode: text
+          text_output_format: figure_context_blocks_v1
+      - name: punctuation_normalization_mapper
+        kind: mapper
+      - name: remove_bibliography_mapper
+        kind: mapper
+      - name: remove_comments_mapper
+        kind: mapper
+      - name: remove_header_mapper
+        kind: mapper
+
+  knowledge_base:
+    description: Knowledge-base and support-corpus refinement
+    specific_operators:
+      - name: fix_unicode_mapper
+        kind: mapper
+      - name: remove_long_words_mapper
+        kind: mapper
+      - name: remove_repeat_sentences_mapper
+        kind: mapper
+
+  pii:
+    description: PII sanitization and redaction
+    specific_operators:
+      - name: clean_email_mapper
+        kind: mapper
+      - name: clean_ip_mapper
+        kind: mapper
+      - name: clean_path_mapper
+        kind: mapper
+      - name: clean_phone_mapper
+        kind: mapper
+      - name: clean_id_card_mapper
+        kind: mapper
+      - name: clean_secret_mapper
+        kind: mapper
+      - name: clean_channel_id_mapper
+        kind: mapper
+      - name: clean_jwt_mapper
+        kind: mapper
+      - name: clean_pem_mapper
+        kind: mapper
+      - name: clean_mac_mapper
+        kind: mapper
+      - name: clean_links_mapper
+        kind: mapper
+      - name: remove_words_with_incorrect_substrings_mapper
+        kind: mapper
+
+  image_safety:
+    description: Image-safety compatibility placeholder; skipped in text-first CDR-Bench v1
+    specific_operators:
+      - name: image_nsfw_filter
+        kind: filter
+      - name: image_subplot_filter
+        kind: filter
+      - name: image_watermark_filter
+        kind: filter

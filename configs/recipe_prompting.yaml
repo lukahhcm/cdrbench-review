@@ -1,0 +1,209 @@
+version: 1
+
+global_prompting_rules:
+  output_should_be_plain_json: false
+  output_should_be_tagged_text: true
+  avoid_markdown_code_fences: true
+  avoid_explanatory_prefix_suffix: true
+  preserve_operator_order: true
+  note: >
+    This file records operator-to-natural-language rendering hints for
+    recipe-to-prompt generation. The generator combines the operator
+    descriptions in recipe order and appends the CDR-Bench JSON output
+    contract.
+
+prompt_styles:
+  user_natural_v1:
+    description: >
+      User-facing natural-language request. It hides Data-Juicer operator names,
+      preserves the exact internal order, and asks the model to return only the
+      final CDR-Bench tagged output.
+    system_prompt: >
+      You are a careful data refinement engine. Follow the user's data
+      refinement request exactly and in order. Return only the required tagged
+      output. Do not explain your reasoning.
+    output_contract:
+      status_values:
+        - KEEP
+        - DROP
+      keep_behavior: If the sample is kept, return the final refined text in clean_text.
+      drop_behavior: If any filtering step rejects the sample, stop and return DROP with the current text in clean_text.
+      tagged_output_hint: '<status>KEEP</status><clean_text>...</clean_text> or <status>DROP</status><clean_text>...</clean_text>'
+
+domain_contexts:
+  web: Clean a web-crawl text sample for corpus ingestion.
+  arxiv: Clean a scientific source-text sample for corpus construction.
+  knowledge_base: Clean a support or knowledge-base text sample for retrieval ingestion.
+  pii: Sanitize privacy-sensitive text before storage or release.
+  atomic: Perform one isolated data-refinement operation for calibration.
+
+serialization_specs:
+  tsv_tables_v1:
+    description: Serialize extracted HTML tables as plain TSV text.
+    output_type: text
+    cell_separator: "\t"
+    row_separator: "\n"
+    table_separator: "\n\n"
+    keep_header: true
+    cell_text_normalization: get_text_strip_true
+    no_table_behavior: leave_text_unchanged
+    model_output_contract:
+      - Use a tab character between cells.
+      - Use a newline between rows.
+      - Use one blank line between tables.
+      - Preserve table headers when present.
+      - Do not add titles, bullets, commentary, or explanations.
+  figure_context_blocks_v1:
+    description: Serialize extracted LaTeX figure contexts as canonical text blocks.
+    output_type: text
+    block_separator: "\n\n"
+    fields_in_order:
+      - figure_index
+      - label
+      - caption
+      - parent_label
+      - parent_caption
+      - images
+      - citing_paragraphs
+    no_figure_behavior: leave_text_unchanged
+    model_output_contract:
+      - Keep figure blocks in source order.
+      - Start each block with `Figure {index}`.
+      - Emit `Label:` and `Caption:` lines for every block.
+      - Emit `Parent Label:` and `Parent Caption:` only when they are non-empty.
+      - Emit `Images:` followed by `- path` lines.
+      - Emit `Citing Paragraphs:` followed by `- paragraph` lines.
+      - Do not add commentary or explanations.
+
+operators:
+  clean_copyright_mapper:
+    natural_language_intent: Remove copyright notices, license headers, and boilerplate ownership text when present.
+  clean_email_mapper:
+    natural_language_intent: Remove email addresses from the text.
+  clean_html_mapper:
+    natural_language_intent: Remove HTML markup, scripts, styles, and page-structure tags while keeping readable content.
+  clean_ip_mapper:
+    natural_language_intent: Remove IP addresses from the text.
+  clean_links_mapper:
+    natural_language_intent: Remove URLs and web links from the text.
+  clean_path_mapper:
+    natural_language_intent: Remove file-system paths such as Unix, Windows, or UNC paths.
+  clean_phone_mapper:
+    natural_language_intent: Remove phone numbers from the text.
+  clean_id_card_mapper:
+    natural_language_intent: Remove personal identification-card numbers from the text.
+  clean_secret_mapper:
+    natural_language_intent: Remove secret-like key-value payloads such as API keys, tokens, passwords, credentials, or authorization values.
+  clean_channel_id_mapper:
+    natural_language_intent: Remove agent-channel identifiers and platform open IDs.
+  clean_jwt_mapper:
+    natural_language_intent: Remove JWT-like tokens from the text.
+  clean_pem_mapper:
+    natural_language_intent: Remove PEM, certificate, or private-key blocks from the text.
+  clean_mac_mapper:
+    natural_language_intent: Remove MAC addresses from the text.
+  expand_macro_mapper:
+    natural_language_intent: Expand simple LaTeX macros so the source text is more explicit.
+  extract_tables_from_html_mapper:
+    benchmark_output_type: text
+    serialization_spec: tsv_tables_v1
+    natural_language_intent: Extract tables from HTML and serialize them into TSV text.
+    prompt_template: >
+      Extract every table from the HTML content and output the tables as plain
+      TSV text. Use tabs between cells, newlines between rows, and one blank
+      line between tables. Preserve table headers when present. Do not add any
+      explanation or Markdown formatting.
+    config_variants:
+      default_benchmark_variant:
+        params:
+          output_mode: text
+          text_output_format: tsv
+      meta_tagging_variant:
+        params:
+          output_mode: meta
+  fix_unicode_mapper:
+    natural_language_intent: Normalize broken or unusual Unicode characters into standard readable text.
+  latex_figure_context_extractor_mapper:
+    benchmark_output_type: text
+    serialization_spec: figure_context_blocks_v1
+    natural_language_intent: Extract figure and subfigure context from LaTeX and serialize it into canonical text blocks.
+    prompt_template: >
+      Extract every figure or subfigure from the LaTeX source and output a
+      canonical text summary. For each extracted figure block, include its
+      label, caption, parent label and parent caption when available, image
+      paths, and the prose paragraphs that cite it. Output plain text only and
+      keep the figure blocks in document order.
+    config_variants:
+      default_benchmark_variant:
+        params:
+          output_mode: text
+          text_output_format: figure_context_blocks_v1
+      row_expansion_variant:
+        params:
+          output_mode: rows
+  punctuation_normalization_mapper:
+    natural_language_intent: Normalize punctuation into a consistent readable form.
+  remove_bibliography_mapper:
+    natural_language_intent: Remove bibliography or reference-list sections from LaTeX/source text.
+  remove_comments_mapper:
+    natural_language_intent: Remove comments from LaTeX/source text.
+  remove_header_mapper:
+    natural_language_intent: Remove document header or preamble-like source material.
+  remove_long_words_mapper:
+    natural_language_intent: Remove abnormally long malformed words or tokens.
+  remove_repeat_sentences_mapper:
+    natural_language_intent: Remove repeated sentences while keeping the remaining text order.
+  remove_specific_chars_mapper:
+    natural_language_intent: Remove task-specific unwanted symbols or characters.
+  remove_table_text_mapper:
+    natural_language_intent: Remove table-like residue from extracted document text.
+  remove_words_with_incorrect_substrings_mapper:
+    natural_language_intent: Remove words containing malformed or incorrect substrings.
+  whitespace_normalization_mapper:
+    natural_language_intent: Normalize spacing, tabs, line breaks, and repeated whitespace.
+
+filters:
+  alphanumeric_filter:
+    metric_name: alphanumeric character ratio
+    unit: ratio
+    natural_language_intent: Decide whether the text has enough alphanumeric content.
+  average_line_length_filter:
+    metric_name: average line length
+    unit: characters
+    natural_language_intent: Decide whether the average line length is acceptable.
+  character_repetition_filter:
+    metric_name: character repetition ratio
+    unit: ratio
+    natural_language_intent: Decide whether character repetition is acceptable.
+  flagged_words_filter:
+    metric_name: flagged-word ratio
+    unit: ratio
+    natural_language_intent: Decide whether flagged-word content is acceptable.
+  maximum_line_length_filter:
+    metric_name: maximum line length
+    unit: characters
+    natural_language_intent: Decide whether the longest line is acceptable.
+  special_characters_filter:
+    metric_name: special-character ratio
+    unit: ratio
+    natural_language_intent: Decide whether special-character content is acceptable.
+  stopwords_filter:
+    metric_name: stopword ratio
+    unit: ratio
+    natural_language_intent: Decide whether the text has enough natural-language stopwords.
+  text_length_filter:
+    metric_name: text length
+    unit: characters
+    natural_language_intent: Decide whether the text length is acceptable.
+  word_repetition_filter:
+    metric_name: word repetition ratio
+    unit: ratio
+    natural_language_intent: Decide whether word repetition is acceptable.
+  words_num_filter:
+    metric_name: word count
+    unit: words
+    natural_language_intent: Decide whether the word count is acceptable.
+
+future_extension_notes:
+  - Add evaluator-side canonicalization rules if prompt outputs are sensitive to whitespace.
+  - Add paraphrase templates for prompt-robustness experiments.
