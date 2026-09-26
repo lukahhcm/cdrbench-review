@@ -1,218 +1,229 @@
 # CDR-Bench
 
-This anonymous code release contains the core implementation for constructing and running CDR-Bench, a benchmark for compositional, order-sensitive data refinement by LLMs.
+Core utilities for loading benchmark JSONL files, running model inference,
+scoring predictions, and summarizing results.
 
-The release keeps the original project shape:
+## Installation
 
-```text
-configs/                  corpus, domain, and prompt-generation configs
-scripts/                  end-to-end construction, prompt, inference, and scoring wrappers
-src/cdrbench/             Python package
-  prepare_data/           data construction and deterministic reference generation
-  prompting/              prompt library and eval-file construction
-  eval/                   inference output parsing and metric computation
-  infer/                  OpenAI-compatible and vLLM inference backends
-  release/                helper for downloading JSONL files from a dataset repo
-```
-
-The following are intentionally not included: paper drafts, model-specific experiment wrappers, analysis/plotting scripts, cached predictions, evaluation outputs, raw corpora, and the full Data-Juicer checkout.
-
-## Environment
-
-Use Python 3.11 if possible.
+Use Python 3.10 or newer. Run commands from the repository root.
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-python -m pip install -U pip
-python -m pip install -e .
+python -m pip install -r requirements.txt
 ```
 
-CDR-Bench uses Data-Juicer operators to execute deterministic data-refinement recipes. For full data construction, install Data-Juicer or place a compatible checkout at `./data-juicer`:
+The client uses OpenAI-compatible HTTP endpoints. For local GPU inference,
+install vLLM in a separate Linux/CUDA environment and start a server there.
+
+## Benchmark data
+
+Download from the dataset repository supplied with the benchmark:
 
 ```bash
-python -m pip install py-data-juicer
+bash scripts/download_benchmark.sh --repo-id DATASET_REPO_ID
+bash scripts/validate_benchmark.sh
 ```
 
-If a local `./data-juicer` directory exists, the construction scripts prefer its `tools/process_data.py` and `tools/analyze_data.py`. Otherwise they fall back to the installed `dj-process` / `dj-analyze` commands.
-
-## Data Layout
-
-Raw JSONL files should be placed under `data/raw/` following `configs/corpora.yaml`:
+`--repo-id` is required. Replace `DATASET_REPO_ID` with the supplied dataset
+identifier. Use `--revision` to pin a dataset version. Alternatively, place
+existing JSONL files in the following layout:
 
 ```text
-data/raw/arxiv/arxiv-4k.jsonl
-data/raw/commoncrawl/cc-10k.jsonl
-data/raw/enwiki/enwiki-pages-110k.jsonl
-data/raw/govreport/govreport-20k.jsonl
-data/raw/pii/pii-43k.jsonl
-data/raw/pii/docpii-contextual-1k.jsonl
-data/raw/pii/synthetic-anonymizer-8k.jsonl
+data/benchmark_v3/
+  tracks/                       evaluation-ready track files
+    atomic_m.jsonl
+    atomic_f.jsonl
+    agnostic_m.jsonl
+    order_m.jsonl
+    order_f.jsonl
+    semantic_*.jsonl
+  tracks_all_prompts/           optional full prompt pools
 ```
 
-If the raw files are hosted in a Hugging Face dataset repo, download them with:
+Validate another location by passing JSONL paths explicitly:
 
 ```bash
-PYTHONPATH=src python -m cdrbench.release.download_hf_jsonl \
-  --repo-id <anonymous-or-camera-ready-dataset-repo> \
-  --repo-root .
+bash scripts/validate_benchmark.sh /path/to/tracks/*.jsonl
 ```
 
-The file list used by the downloader is in `configs/release_jsonl_manifest.txt`.
+## Tracks and output rules
 
-## Build The Benchmark
+| Track | Task | Output |
+| --- | --- | --- |
+| `atomic_m` | One mapper | Refined text |
+| `atomic_f` | One filter | `KEEP` / `DROP` decision |
+| `agnostic_m` | Multiple mappers | Refined text |
+| `order_m` | Mapper order variants | Refined text |
+| `order_f` | Filter placement variants | Decision and text at the stopping point |
+| `semantic_pii_*` | PII redaction | Tagged text |
+| `semantic_hallu_*` | Hallucination processing | JSON or tagged text |
+| `semantic_rubric_*` | Rubric scoring | JSON |
+| `semantic_safety_*` | Safety tagging | JSON |
 
-For a quick smoke test, cap records and skip prompt generation:
-
-```bash
-PYTHONPATH=src ./scripts/run_recipe_pipeline.sh \
-  --max-records 200 \
-  --max-text-length 10000 \
-  --skip-prompt-pipeline
-```
-
-For the full deterministic construction pipeline:
-
-```bash
-PYTHONPATH=src ./scripts/run_recipe_pipeline.sh \
-  --max-text-length 10000 \
-  --skip-prompt-pipeline
-```
-
-This runs:
-
-1. domain filtering and operator tagging
-2. recipe-family mining
-3. deterministic recipe-library materialization
-4. benchmark-instance sampling
-5. deterministic reference generation
-
-Main outputs:
+Apply operations in the given order to the current intermediate text. If a
+filter rejects a sample, stop immediately and return `DROP` with the text at
+that point. Otherwise return `KEEP` with the final text. For tagged-text rows,
+use:
 
 ```text
-data/processed/domain_filtered/all.jsonl
-data/processed/domain_tags/*.jsonl
-data/processed/recipe_mining/
-data/processed/recipe_library/
-data/processed/benchmark_instances/atomic_ops.jsonl
-data/processed/benchmark_instances/main.jsonl
-data/processed/benchmark_instances/order_sensitivity.jsonl
+<status>KEEP</status><clean_text>refined text</clean_text>
 ```
 
-## Build Eval-Ready Prompt Files
+Structured rows use the JSON fields requested by their prompt. The row fields
+`output_format`, `scoring_profile`, and `reports_refinement_gain` determine the
+output contract and applicable metrics. Schema validation is implemented in
+`src/cdrbench_v3/schema.py`.
 
-Prompt generation is separated from deterministic reference construction.
+## Run evaluation
 
-Template-only prompt construction, useful for reviewers without API access:
+Hosted OpenAI-compatible endpoint:
 
 ```bash
-PYTHONPATH=src ./scripts/run_prompt_pipeline_all_tracks.sh \
-  --benchmark-dir data/processed/benchmark_instances \
-  --benchmark-output-root data/benchmark \
-  --prompt-source template \
-  --tracks atomic_ops,main,order_sensitivity \
-  --skip-judge \
-  --no-prompt-api-key
+MODEL=my-model \
+MODEL_SLUG=my_model \
+BASE_URL=https://api.example.com/v1 \
+API_KEY=YOUR_API_KEY \
+bash scripts/eval/api/eval_model.sh
 ```
 
-LLM-generated prompt variants with an OpenAI-compatible endpoint:
+Local vLLM endpoint:
 
 ```bash
-export OPENAI_API_KEY=<your_api_key>
-
-PYTHONPATH=src ./scripts/run_prompt_pipeline_all_tracks.sh \
-  --benchmark-dir data/processed/benchmark_instances \
-  --benchmark-output-root data/benchmark \
-  --prompt-source llm \
-  --model <model_name> \
-  --base-url <openai_compatible_base_url> \
-  --tracks atomic_ops,main,order_sensitivity
+MODEL=local-model \
+MODEL_SLUG=local_model \
+BASE_URL=http://127.0.0.1:8000/v1 \
+API_KEY=EMPTY \
+bash scripts/eval/vllm/eval_model.sh
 ```
 
-Eval-ready benchmark files are written to:
+The wrappers accept `infer`, `score`, or `all` (default). Set `EVAL_SUITE=semantic`
+to evaluate the semantic extensions. Set `TRACKS=atomic_m` to restrict execution
+to one track, and `MAX_SAMPLES=10` for a small smoke run.
 
-```text
-data/benchmark/atomic_ops/atomic_ops.jsonl
-data/benchmark/main/main.jsonl
-data/benchmark/order_sensitivity/order_sensitivity.jsonl
-```
+Common controls:
 
-## Run Inference
+| Variable | Default / purpose |
+| --- | --- |
+| `EVAL_SUITE` | `main`; also accepts `semantic` |
+| `BENCHMARK_ROOT` | `data/benchmark_v3` |
+| `BENCHMARK_TRACKS_SUBDIR` | `tracks` |
+| `EVALUATION_ROOT` | `data/evaluation` |
+| `PROMPT_MODE` | `direct`; also `few_shot`, `plan_first`, `state_aware` |
+| `PROMPT_VARIANT_SAMPLE_SIZE` | `3` |
+| `PROMPT_VARIANT_SAMPLING_SEED` | `0` |
+| `TEMPERATURE` | `0` |
+| `ENABLE_THINKING` | `false` |
+| `CONCURRENCY` | `4` for API; `128` for vLLM |
+| `RESUME` | `true` |
 
-The inference driver reads eval-ready JSONL files and writes raw model predictions. It supports remote OpenAI-compatible APIs and local vLLM servers.
+The default core track files contain three preselected prompt variants using
+seed 0. For custom prompt sampling, use `tracks_all_prompts` and explicitly set
+the sample size and seed. Semantic evaluation defaults to the styles `direct`,
+`imperative_checklist`, and `application_context`. Keep data versions, prompt
+selection, decoding settings, and scoring settings fixed when comparing runs.
+The evaluation wrappers require `MAX_TOKENS=0`; configure the model/server
+context length instead of truncating output in the runner.
 
-Remote API example:
+For a direct single-file inference run:
 
 ```bash
-PYTHONPATH=src ./scripts/infer_benchmark_tracks.sh \
-  --eval-root data/benchmark \
-  --output-root data/evaluation \
-  --tracks atomic_ops,main,order_sensitivity \
-  --model-dirname my_model \
-  --model <model_name> \
-  --base-url <openai_compatible_base_url> \
-  --api-key <your_api_key> \
-  --resume
+bash scripts/run_inference.sh \
+  --benchmark-path data/benchmark_v3/tracks/atomic_m.jsonl \
+  --output-path data/results/atomic_m/my_model/predictions.jsonl \
+  --model my-model \
+  --backend api \
+  --base-url https://api.example.com/v1 \
+  --prompt-variant-indices 0 \
+  --max-samples 10
 ```
 
-Local vLLM example:
+Set `OPENAI_API_KEY` for this lower-level API command. API keys and generated
+outputs should remain outside version control.
+
+## Scoring and summaries
+
+The evaluation wrappers score predictions automatically in `all` mode. To
+score a separate prediction file:
 
 ```bash
-PYTHONPATH=src ./scripts/infer_benchmark_tracks.sh \
-  --eval-root data/benchmark \
-  --output-root data/evaluation \
-  --tracks atomic_ops,main,order_sensitivity \
-  --model-dirname local_model \
-  --model local-model \
-  --base-url http://127.0.0.1:8000/v1 \
-  --api-key EMPTY \
-  --resume
-```
-
-For smoke tests, add `--max-samples 20`.
-
-## Score Predictions
-
-After inference, compute CDR-Bench metrics:
-
-```bash
-PYTHONPATH=src ./scripts/score_benchmark_tracks.sh \
-  --predictions-root data/evaluation \
-  --model-dirname my_model \
-  --tracks atomic_ops,main,order_sensitivity
-```
-
-Each track writes:
-
-```text
-data/evaluation/<track>/<model_dirname>/predictions.jsonl
-data/evaluation/<track>/<model_dirname>/predictions.summary.json
-data/evaluation/<track>/<model_dirname>/score/report.txt
-data/evaluation/<track>/<model_dirname>/score/paper_metrics.json
-data/evaluation/<track>/<model_dirname>/score/instance_metrics.jsonl
-data/evaluation/<track>/<model_dirname>/score/by_*.csv
+bash scripts/score_predictions.sh \
+  --predictions-path data/results/atomic_m/my_model/predictions.jsonl \
+  --output-dir data/results/atomic_m/my_model/score \
+  --rs-at-k 3 \
+  --write-csv
 ```
 
 Core metrics:
 
-- `status_match`: predicted `KEEP` / `DROP` equals the deterministic reference
-- `text_exact_match`: predicted clean text exactly equals the reference text
-- `norm_recipe_success`: status match plus normalized text exact match
-- `refinement_gain`: normalized edit-distance improvement from input toward the reference
+- **Recipe Success (RS):** matching status and normalized reference text;
+  structured rows use canonical JSON comparison.
+- **RS@K:** success in any of the selected K prompt variants, selected
+  deterministically using the configured seed. All K predictions must be
+  present and valid; incomplete sets count as unsuccessful.
+- **Refinement Gain (RG):** edit-distance improvement toward the reference,
+  clipped to `[0, 1]`; only reported for applicable text-output rows.
+- **Order-Consistent Success (OCS):** success across all evaluated variants in
+  an order-sensitive group. Evaluate complete groups for meaningful scores.
 
-## Important Files
+Default core evaluation outputs:
 
-- `configs/domains.yaml`: domain-to-operator plan
-- `configs/recipe_prompting.yaml`: prompt styles and output contract
-- `src/cdrbench/prepare_data/tag_and_assign_domains.py`: operator tagging and domain assignment
-- `src/cdrbench/prepare_data/mine_domain_recipes.py`: recipe mining
-- `src/cdrbench/prepare_data/materialize_domain_recipes.py`: deterministic recipe replay
-- `src/cdrbench/prepare_data/materialize_benchmark_instances.py`: benchmark sampling and reference generation
-- `src/cdrbench/prompting/generate_recipe_prompt_library.py`: prompt candidate generation and judging
-- `src/cdrbench/prompting/build_eval_prompt_tracks.py`: eval-ready track construction
-- `src/cdrbench/eval/run_benchmark_infer.py`: model inference
-- `src/cdrbench/eval/run_benchmark_score.py`: metric computation
+```text
+data/evaluation/<track>/<model_slug>/
+  predictions_direct_k3_seed0.jsonl
+  score_direct_k3_seed0/
+    summary.json
+    metrics.json
+    instance_metrics.jsonl
+    instance_metrics.csv
+    scored_variant_predictions.jsonl
+    scored_variant_predictions.csv
+```
 
-## Notes For Anonymous Review
+Semantic outputs use `predictions_semantic_styles3.jsonl` and
+`score_semantic_styles3/`. `metrics.json` contains the compact RS/RG/OCS summary;
+`summary.json` includes aggregate breakdowns.
 
-This folder is designed for code upload during anonymous review. Dataset hosting URLs, model endpoint URLs, API keys, model-specific experiment wrappers, paper analysis code, and generated outputs should be added separately only when they are appropriate for the submission stage.
+```bash
+bash scripts/summarize_results.sh \
+  --track-family main \
+  --models my_model \
+  --output-dir data/evaluation/reports/my_model
+```
+
+Use comma-separated model names and optionally `--base-model BASE_MODEL` for
+comparisons. The command writes Markdown, JSON, and CSV reports.
+
+## Code layout
+
+```text
+requirements.txt
+src/cdrbench_v3/
+  download_benchmark.py          dataset download
+  schema.py                     row schema and track definitions
+  validate_benchmark.py         JSONL validation
+  run_inference.py               prompts, API calls, response parsing
+  metrics.py                    metric definitions
+  score_predictions.py          prediction scoring
+  summarize_results.py          aggregate reports
+  normalize_hallu_compositional.py
+  io.py
+scripts/
+  download_benchmark.sh
+  validate_benchmark.sh
+  infer/                        single-file and suite inference
+  score/                        single-file and suite scoring
+  eval/                         shared evaluation runner and generic backends
+  start_vllm.sh                  optional local serving helper
+  stop_vllm.sh
+```
+
+Root-level inference and scoring scripts forward to their corresponding
+subdirectories. Run `bash scripts/eval/run_model_eval.sh --help` for evaluation
+controls, or append `--help` to the Python-backed entrypoints for CLI options.
+
+## Data usage
+
+Dataset subsets remain subject to their respective upstream licenses and terms.
+Consult the documentation distributed with the benchmark data before using or
+redistributing those files.

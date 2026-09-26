@@ -1,0 +1,4 @@
+datasets>=2.19.0
+editdistance>=0.8.1
+huggingface_hub>=0.24.0
+requests>=2.31.0

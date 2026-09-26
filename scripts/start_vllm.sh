@@ -14,6 +14,21 @@ MAX_NUM_BATCHED_TOKENS="${MAX_NUM_BATCHED_TOKENS:-32768}"
 
 export VLLM_USE_MODELSCOPE="${VLLM_USE_MODELSCOPE:-False}"
 
+if ! python - <<'PY' >/dev/null 2>&1
+import vllm  # noqa: F401
+PY
+then
+  cat >&2 <<'EOF'
+[start_vllm] ERROR: vLLM is not installed in the current Python environment.
+
+The CDR-Bench requirements.txt intentionally installs only the lightweight
+evaluation client dependencies. To use scripts/start_vllm.sh, activate a
+separate Linux/CUDA serving environment and install vLLM following the official
+vLLM documentation for your hardware and PyTorch/CUDA stack.
+EOF
+  exit 1
+fi
+
 echo "========================================================"
 echo "[start_vllm] MODEL_PATH = ${MODEL_PATH}"
 echo "[start_vllm] MODEL_NAME = ${MODEL_NAME}"
@@ -51,9 +66,9 @@ echo "${VLLM_PID}" > "/tmp/vllm_${PORT}.pid"
 echo "${PORT}" > "/tmp/vllm_${PORT}.port"
 echo "[start_vllm] vLLM started (PID=${VLLM_PID}), waiting for ready..."
 
-MAX_WAIT=1200
+MAX_WAIT="${VLLM_START_MAX_WAIT:-1200}"
 WAITED=0
-until curl -sf "http://127.0.0.1:${PORT}/health" > /dev/null 2>&1; do
+until curl --noproxy '*' -sf "http://127.0.0.1:${PORT}/ping" > /dev/null 2>&1; do
   if ! kill -0 "${VLLM_PID}" 2>/dev/null; then
     echo "[start_vllm] ERROR: vLLM process exited before health check passed (PID=${VLLM_PID})"
     rm -f "/tmp/vllm_${PORT}.pid" "/tmp/vllm_${PORT}.port"

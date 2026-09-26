@@ -9,41 +9,41 @@ Usage:
   run_model_eval.sh [infer|score|all] --mode <direct|few_shot|plan_first|state_aware>
   run_model_eval.sh --prompt-mode <direct|few_shot|plan_first|state_aware>
 
-Modes:
-  infer   Run inference only, resuming from existing outputs and rerunning anything that did not complete successfully.
-  score   Recompute scores only, replacing each track's entire score/ directory.
-  all     Default. Run infer + score sequentially per track.
-
-Prompt modes:
-  direct
-  few_shot
-  plan_first
-  state_aware
-
-Configuration is provided by environment variables from thin model wrappers.
-  Preferred wrapper inputs:
-  EVALUATION_ROOT   Final root for per-track evaluation outputs. Default: data/evaluation_v2
-  MODEL_SLUG        Directory name under each track, for example local_model or gpt_4o_mini
-  RESUME_ONLY_EXISTING_ROWS  When true, resume only over instance_ids already present in predictions
-  ENABLE_THINKING  true/false override for supported models. Default leaves inference behavior unchanged.
-
-Compatibility note:
-  OUTPUT_ROOT is still accepted for older wrappers. Legacy values such as
-  data/evaluation/infer/<model_slug> are normalized to the final layout above.
-
-For API models, leave BASE_URL unset to auto-resolve the correct endpoint from the model config.
-If PROMPT_API_KEY=true and API_KEY is empty, the script will prompt for a key before inference.
+Environment variables, usually set by thin wrappers:
+  EVAL_SUITE                     main or semantic. Default: main
+  TRACKS                         Optional override. main defaults to the five core tracks;
+                                 semantic defaults to implemented atomic/compositional extension tracks
+  BENCHMARK_ROOT                 Default: data/benchmark_v3
+  EVAL_ROOT                      Alias for BENCHMARK_ROOT
+  BENCHMARK_TRACKS_SUBDIR        Default: tracks. Use tracks_all_prompts for custom prompt-seed sweeps
+  EVALUATION_ROOT                Default: data/evaluation
+  OUTPUT_ROOT                    Alias for EVALUATION_ROOT
+  MODEL                          Required for infer/all
+  MODEL_SLUG                     Directory name under each track
+  BACKEND                        api or vllm. Default: api
+  BASE_URL                       Optional; API models auto-resolve if unset
+  API_KEY                        Optional; vLLM defaults to EMPTY
+  PROMPT_VARIANT_INDICES         Default: all
+  PROMPT_STYLE_IDS               Semantic default: direct,imperative_checklist,application_context
+  PROMPT_VARIANT_SAMPLE_SIZE     Default: 3
+  PROMPT_VARIANT_SAMPLING_SEED   Default: 0
+  PROMPT_MODE                    Default: direct
+  MAX_SAMPLES                    Default: 0
+  MAX_INPUT_CHARS                Default: 0
+  MAX_TOKENS                     Default: 0
+  TEMPERATURE                    Default: 0
+  MAX_RETRIES                    Default: 1
+  RETRY_SLEEP_SECONDS            Default: 2.0
+  CONCURRENCY                    Default: 4 for api wrappers, 128 for vllm wrappers
+  RESUME                         Default: true
+  RESUME_ONLY_EXISTING_ROWS      Default: false
+  ENABLE_THINKING                true/false. Default: false in model wrappers and lower-level inference.
 EOF
 }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
-cd "${REPO_ROOT}"
-
-PYTHON_BIN="${REPO_ROOT}/.venv-ops/bin/python"
-if [[ ! -x "${PYTHON_BIN}" ]]; then
-  PYTHON_BIN="python3"
-fi
+RELEASE_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+cd "${RELEASE_ROOT}"
 
 MODE="all"
 PROMPT_MODE_OVERRIDE=""
@@ -56,11 +56,6 @@ while [[ $# -gt 0 ]]; do
       shift 1
       ;;
     --mode)
-      if [[ $# -lt 2 ]]; then
-        echo "--mode requires a value." >&2
-        usage
-        exit 1
-      fi
       case "$2" in
         infer|score|all)
           MODE="$2"
@@ -77,11 +72,6 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     --prompt-mode)
-      if [[ $# -lt 2 ]]; then
-        echo "--prompt-mode requires a value." >&2
-        usage
-        exit 1
-      fi
       PROMPT_MODE_OVERRIDE="$2"
       shift 2
       ;;
@@ -97,41 +87,72 @@ while [[ $# -gt 0 ]]; do
 done
 
 case "${MODE}" in
-  infer|score|all)
+  infer|score|all) ;;
+  *) echo "Unsupported mode: ${MODE}" >&2; usage; exit 1 ;;
+esac
+
+EVAL_SUITE="${EVAL_SUITE:-main}"
+MAIN_TRACKS="atomic_m,atomic_f,agnostic_m,order_m,order_f"
+SEMANTIC_IMPLEMENTED_TRACKS="semantic_pii_atomic,semantic_pii_compositional,semantic_hallu_atomic,semantic_hallu_compositional,semantic_rubric_atomic,semantic_rubric_compositional,semantic_safety_atomic,semantic_safety_compositional"
+SEMANTIC_EXTRA_TRACKS="${SEMANTIC_EXTRA_TRACKS:-}"
+case "${EVAL_SUITE}" in
+  main)
+    DEFAULT_TRACKS="${MAIN_TRACKS}"
+    DEFAULT_PROMPT_STYLE_IDS=""
+    ;;
+  semantic)
+    DEFAULT_TRACKS="${SEMANTIC_IMPLEMENTED_TRACKS}${SEMANTIC_EXTRA_TRACKS:+,${SEMANTIC_EXTRA_TRACKS}}"
+    DEFAULT_PROMPT_STYLE_IDS="direct,imperative_checklist,application_context"
     ;;
   *)
-    echo "Unsupported mode: ${MODE}" >&2
-    usage
+    echo "Unsupported EVAL_SUITE: ${EVAL_SUITE}. Use main or semantic." >&2
     exit 1
     ;;
 esac
 
-TRACKS="${TRACKS:-atomic_m,atomic_f,agnostic_m,order_m,order_f}"
-EVAL_ROOT="${EVAL_ROOT:-data/benchmark_v2}"
+TRACKS="${TRACKS:-${DEFAULT_TRACKS}}"
+BENCHMARK_ROOT="${BENCHMARK_ROOT:-${EVAL_ROOT:-data/benchmark_v3}}"
+BENCHMARK_TRACKS_SUBDIR="${BENCHMARK_TRACKS_SUBDIR:-tracks}"
+EVALUATION_ROOT="${EVALUATION_ROOT:-${OUTPUT_ROOT:-data/evaluation}}"
+PREDICTIONS_ROOT="${PREDICTIONS_ROOT:-${EVALUATION_ROOT}}"
 MODEL="${MODEL:-}"
+MODEL_SLUG="${MODEL_SLUG:-${MODEL_DIRNAME:-}}"
+BACKEND="${BACKEND:-api}"
 BASE_URL="${BASE_URL:-}"
 API_KEY="${API_KEY:-}"
-PROMPT_API_KEY="${PROMPT_API_KEY:-false}"
-EVALUATION_ROOT="${EVALUATION_ROOT:-}"
-OUTPUT_ROOT="${OUTPUT_ROOT:-${EVALUATION_ROOT:-data/evaluation_v2}}"
-MODEL_DIRNAME="${MODEL_DIRNAME:-${MODEL_SLUG:-}}"
 PROMPT_VARIANT_INDICES="${PROMPT_VARIANT_INDICES:-all}"
+PROMPT_STYLE_IDS="${PROMPT_STYLE_IDS:-${DEFAULT_PROMPT_STYLE_IDS}}"
 PROMPT_VARIANT_SAMPLE_SIZE="${PROMPT_VARIANT_SAMPLE_SIZE:-3}"
 PROMPT_VARIANT_SAMPLING_SEED="${PROMPT_VARIANT_SAMPLING_SEED:-0}"
 PROMPT_MODE="${PROMPT_MODE:-direct}"
-FEW_SHOT_SOURCE_ROOT="${FEW_SHOT_SOURCE_ROOT:-data/benchmark_v2}"
-PREDICTIONS_FILENAME="${PREDICTIONS_FILENAME:-}"
-SCORE_DIRNAME="${SCORE_DIRNAME:-}"
-SCORE_PROMPT_VARIANT_SAMPLE_SIZE="${SCORE_PROMPT_VARIANT_SAMPLE_SIZE:-3}"
-SCORE_PROMPT_VARIANT_SAMPLING_SEED="${SCORE_PROMPT_VARIANT_SAMPLING_SEED:-0}"
+if [[ -n "${PROMPT_MODE_OVERRIDE}" ]]; then
+  PROMPT_MODE="${PROMPT_MODE_OVERRIDE}"
+fi
+case "${PROMPT_MODE}" in
+  direct|few_shot|plan_first|state_aware) ;;
+  *)
+    echo "Unsupported prompt mode in release_v3: ${PROMPT_MODE}" >&2
+    exit 1
+    ;;
+esac
 MAX_SAMPLES="${MAX_SAMPLES:-0}"
 MAX_INPUT_CHARS="${MAX_INPUT_CHARS:-0}"
 MAX_TOKENS="${MAX_TOKENS:-0}"
+if [[ "${MAX_TOKENS}" != "0" ]]; then
+  echo "MAX_TOKENS must be 0 for benchmark evaluation; got ${MAX_TOKENS}." >&2
+  echo "Use the model/server context length instead of truncating generation at the runner level." >&2
+  exit 1
+fi
+TEMPERATURE="${TEMPERATURE:-0}"
+MAX_RETRIES="${MAX_RETRIES:-1}"
+RETRY_SLEEP_SECONDS="${RETRY_SLEEP_SECONDS:-${RETRY_DELAY:-2.0}}"
 CONCURRENCY="${CONCURRENCY:-4}"
 PROGRESS_EVERY="${PROGRESS_EVERY:-20}"
 RESUME="${RESUME:-true}"
 RESUME_ONLY_EXISTING_ROWS="${RESUME_ONLY_EXISTING_ROWS:-false}"
 ENABLE_THINKING="${ENABLE_THINKING:-}"
+SCORE_PROMPT_VARIANT_SAMPLE_SIZE="${SCORE_PROMPT_VARIANT_SAMPLE_SIZE:-${RS_AT_K:-3}}"
+SCORE_PROMPT_VARIANT_SAMPLING_SEED="${SCORE_PROMPT_VARIANT_SAMPLING_SEED:-${PROMPT_VARIANT_SAMPLING_SEED}}"
 
 sanitize_model_dirname() {
   local value="$1"
@@ -141,202 +162,94 @@ sanitize_model_dirname() {
   printf '%s' "${value:-model}"
 }
 
-derive_model_dirname() {
-  if [[ -n "${MODEL_DIRNAME}" ]]; then
-    printf '%s' "${MODEL_DIRNAME}"
-    return
-  fi
-  if [[ -n "${MODEL_SLUG:-}" ]]; then
-    printf '%s' "${MODEL_SLUG}"
-    return
-  fi
-  if [[ -n "${OUTPUT_ROOT}" ]]; then
-    local base
-    base="$(basename "${OUTPUT_ROOT}")"
-    if [[ "${base}" != "evaluation" && "${base}" != "infer" && "${base}" != "." ]]; then
-      printf '%s' "${base}"
-      return
-    fi
-  fi
-  printf '%s' "$(sanitize_model_dirname "${MODEL}")"
-}
-
-derive_evaluation_root() {
-  if [[ -n "${EVALUATION_ROOT:-}" ]]; then
-    printf '%s' "${EVALUATION_ROOT}"
-    return
-  fi
-  if [[ "${OUTPUT_ROOT}" == */infer/* ]]; then
-    printf '%s' "$(dirname "$(dirname "${OUTPUT_ROOT}")")"
-    return
-  fi
-  printf '%s' "${OUTPUT_ROOT}"
-}
-
-if [[ -n "${PROMPT_MODE_OVERRIDE}" ]]; then
-  PROMPT_MODE="${PROMPT_MODE_OVERRIDE}"
+if [[ -z "${MODEL_SLUG}" ]]; then
+  MODEL_SLUG="$(sanitize_model_dirname "${MODEL}")"
 fi
 
-case "${PROMPT_MODE}" in
-  direct|few_shot|plan_first|state_aware)
-    ;;
-  *)
-    echo "Unsupported prompt mode: ${PROMPT_MODE}" >&2
-    usage
-    exit 1
-    ;;
-esac
-
-MODEL_DIRNAME="$(derive_model_dirname)"
-OUTPUT_ROOT="$(derive_evaluation_root)"
-PREDICTIONS_ROOT="${PREDICTIONS_ROOT:-${OUTPUT_ROOT}}"
-
-infer_sampling_suffix=""
-if [[ "${PROMPT_VARIANT_SAMPLE_SIZE}" =~ ^[0-9]+$ ]] && [[ "${PROMPT_VARIANT_SAMPLE_SIZE}" -gt 0 ]]; then
-  infer_sampling_suffix="_k${PROMPT_VARIANT_SAMPLE_SIZE}_seed${PROMPT_VARIANT_SAMPLING_SEED}"
-fi
-
-score_sampling_suffix=""
-if [[ "${SCORE_PROMPT_VARIANT_SAMPLE_SIZE}" =~ ^[0-9]+$ ]] && [[ "${SCORE_PROMPT_VARIANT_SAMPLE_SIZE}" -gt 0 ]]; then
-  score_sampling_suffix="_k${SCORE_PROMPT_VARIANT_SAMPLE_SIZE}_seed${SCORE_PROMPT_VARIANT_SAMPLING_SEED}"
-fi
-
-if [[ -z "${PREDICTIONS_FILENAME}" ]]; then
-  PREDICTIONS_FILENAME="predictions_${PROMPT_MODE}${infer_sampling_suffix}.jsonl"
-fi
-
-if [[ -z "${SCORE_DIRNAME}" ]]; then
-  SCORE_DIRNAME="score_${PROMPT_MODE}${score_sampling_suffix}"
-fi
-
-prompt_for_api_key_if_needed() {
-  if [[ "${PROMPT_API_KEY}" != "true" || -n "${API_KEY}" ]]; then
-    return
+if [[ "${EVAL_SUITE}" == "semantic" ]]; then
+  PREDICTIONS_FILENAME="${PREDICTIONS_FILENAME:-predictions_semantic_styles3.jsonl}"
+  SCORE_DIRNAME="${SCORE_DIRNAME:-score_semantic_styles3}"
+else
+  infer_sampling_suffix=""
+  if [[ "${PROMPT_VARIANT_SAMPLE_SIZE}" =~ ^[0-9]+$ ]] && [[ "${PROMPT_VARIANT_SAMPLE_SIZE}" -gt 0 ]]; then
+    infer_sampling_suffix="_k${PROMPT_VARIANT_SAMPLE_SIZE}_seed${PROMPT_VARIANT_SAMPLING_SEED}"
   fi
-  IFS= read -rsp "API key for ${MODEL}: " API_KEY
-  echo
-  if [[ -z "${API_KEY}" ]]; then
-    echo "API key cannot be empty." >&2
-    exit 1
+  score_sampling_suffix=""
+  if [[ "${SCORE_PROMPT_VARIANT_SAMPLE_SIZE}" =~ ^[0-9]+$ ]] && [[ "${SCORE_PROMPT_VARIANT_SAMPLE_SIZE}" -gt 0 ]]; then
+    score_sampling_suffix="_k${SCORE_PROMPT_VARIANT_SAMPLE_SIZE}_seed${SCORE_PROMPT_VARIANT_SAMPLING_SEED}"
   fi
-}
+  PREDICTIONS_FILENAME="${PREDICTIONS_FILENAME:-predictions_${PROMPT_MODE}${infer_sampling_suffix}.jsonl}"
+  SCORE_DIRNAME="${SCORE_DIRNAME:-score_${PROMPT_MODE}${score_sampling_suffix}}"
+fi
 
 run_infer() {
   if [[ -z "${MODEL}" ]]; then
-    cat >&2 <<'EOF'
-MODEL is required for infer mode.
-
-Use a per-model wrapper for the default infer+score flow, for example:
-  bash scripts/eval/api/eval_gpt_5_4.sh
-  bash scripts/eval/api/eval_gpt_5_4.sh infer
-  bash scripts/eval/api/eval_gpt_5_4.sh score
-
-Or call the shared driver directly with MODEL set:
-  MODEL=gpt-4o-mini PROMPT_API_KEY=true bash scripts/eval/run_model_eval.sh
-EOF
+    echo "MODEL is required for infer/all mode." >&2
     exit 1
   fi
-
-  prompt_for_api_key_if_needed
-
   cmd=(
-    "${REPO_ROOT}/scripts/infer_benchmark_tracks.sh"
+    bash "${RELEASE_ROOT}/scripts/infer/run_inference_suite.sh"
     --tracks "${TRACKS}"
-    --eval-root "${EVAL_ROOT}"
+    --benchmark-root "${BENCHMARK_ROOT}"
+    --benchmark-tracks-subdir "${BENCHMARK_TRACKS_SUBDIR}"
+    --output-root "${EVALUATION_ROOT}"
     --model "${MODEL}"
-    --output-root "${OUTPUT_ROOT}"
-    --model-dirname "${MODEL_DIRNAME}"
+    --model-dirname "${MODEL_SLUG}"
+    --backend "${BACKEND}"
     --predictions-filename "${PREDICTIONS_FILENAME}"
     --prompt-variant-indices "${PROMPT_VARIANT_INDICES}"
+    --prompt-style-ids "${PROMPT_STYLE_IDS}"
     --prompt-variant-sample-size "${PROMPT_VARIANT_SAMPLE_SIZE}"
     --prompt-variant-sampling-seed "${PROMPT_VARIANT_SAMPLING_SEED}"
     --prompt-mode "${PROMPT_MODE}"
-    --few-shot-source-root "${FEW_SHOT_SOURCE_ROOT}"
     --max-samples "${MAX_SAMPLES}"
     --max-input-chars "${MAX_INPUT_CHARS}"
     --max-tokens "${MAX_TOKENS}"
+    --temperature "${TEMPERATURE}"
+    --max-retries "${MAX_RETRIES}"
+    --retry-sleep-seconds "${RETRY_SLEEP_SECONDS}"
     --concurrency "${CONCURRENCY}"
     --progress-every "${PROGRESS_EVERY}"
   )
-  if [[ -n "${BASE_URL}" ]]; then
-    cmd+=(--base-url "${BASE_URL}")
-  fi
-  if [[ -n "${API_KEY}" ]]; then
-    cmd+=(--api-key "${API_KEY}")
-  fi
-  if [[ "${RESUME}" == "true" ]]; then
-    cmd+=(--resume)
-  fi
-  if [[ "${RESUME_ONLY_EXISTING_ROWS}" == "true" ]]; then
-    cmd+=(--resume-only-existing-rows)
-  fi
+  if [[ -n "${BASE_URL}" ]]; then cmd+=(--base-url "${BASE_URL}"); fi
+  if [[ -n "${API_KEY}" ]]; then export API_KEY; fi
+  if [[ "${RESUME}" == "true" ]]; then cmd+=(--resume); fi
+  if [[ "${RESUME_ONLY_EXISTING_ROWS}" == "true" ]]; then cmd+=(--resume-only-existing-rows); fi
   case "${ENABLE_THINKING}" in
-    true|TRUE|1|yes|YES|on|ON)
-      cmd+=(--enable-thinking)
-      ;;
-    false|FALSE|0|no|NO|off|OFF)
-      cmd+=(--disable-thinking)
-      ;;
-    "")
-      ;;
-    *)
-      echo "Unsupported ENABLE_THINKING value: ${ENABLE_THINKING}" >&2
-      echo "Use true or false." >&2
-      exit 1
-      ;;
+    true|TRUE|1|yes|YES|on|ON) cmd+=(--enable-thinking) ;;
+    false|FALSE|0|no|NO|off|OFF) cmd+=(--disable-thinking) ;;
+    "") ;;
+    *) echo "Unsupported ENABLE_THINKING value: ${ENABLE_THINKING}" >&2; exit 1 ;;
   esac
-  if [[ $# -gt 0 ]]; then
-    cmd+=("$@")
-  fi
-
-  "${cmd[@]}"
-}
-
-remove_existing_scores() {
-  IFS=',' read -r -a TRACK_LIST <<< "${TRACKS}"
-  for track in "${TRACK_LIST[@]}"; do
-    score_dir="${PREDICTIONS_ROOT}/${track}/${MODEL_DIRNAME}/${SCORE_DIRNAME}"
-    rm -rf "${score_dir}"
-  done
+  "${cmd[@]}" ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}
 }
 
 run_score() {
-  remove_existing_scores
-
-  cmd=(
-    "${REPO_ROOT}/scripts/score_benchmark_tracks.sh"
-    --tracks "${TRACKS}"
-    --predictions-root "${PREDICTIONS_ROOT}"
-    --model-dirname "${MODEL_DIRNAME}"
-    --predictions-filename "${PREDICTIONS_FILENAME}"
-    --score-dirname "${SCORE_DIRNAME}"
-    --prompt-variant-sample-size "${SCORE_PROMPT_VARIANT_SAMPLE_SIZE}"
-    --prompt-variant-sampling-seed "${SCORE_PROMPT_VARIANT_SAMPLING_SEED}"
-    --progress-every "${PROGRESS_EVERY}"
-  )
-  if [[ $# -gt 0 ]]; then
-    cmd+=("$@")
-  fi
-
-  "${cmd[@]}"
-}
-
-run_all_per_track() {
   IFS=',' read -r -a TRACK_LIST <<< "${TRACKS}"
   for track in "${TRACK_LIST[@]}"; do
-    TRACKS="${track}" run_infer
-    TRACKS="${track}" run_score
+    rm -rf "${RELEASE_ROOT}/${PREDICTIONS_ROOT}/${track}/${MODEL_SLUG}/${SCORE_DIRNAME}"
   done
+
+  bash "${RELEASE_ROOT}/scripts/score/score_suite.sh" \
+    --tracks "${TRACKS}" \
+    --predictions-root "${PREDICTIONS_ROOT}" \
+    --model-dirname "${MODEL_SLUG}" \
+    --predictions-filename "${PREDICTIONS_FILENAME}" \
+    --score-dirname "${SCORE_DIRNAME}" \
+    --rs-at-k "${SCORE_PROMPT_VARIANT_SAMPLE_SIZE}" \
+    --prompt-variant-sampling-seed "${SCORE_PROMPT_VARIANT_SAMPLING_SEED}" \
+    --progress-every "${PROGRESS_EVERY}" \
+    --write-csv
 }
 
 case "${MODE}" in
-  infer)
-    run_infer "${EXTRA_ARGS[@]}"
-    ;;
-  score)
-    run_score "${EXTRA_ARGS[@]}"
-    ;;
+  infer) run_infer ;;
+  score) run_score ;;
   all)
-    run_all_per_track
+    IFS=',' read -r -a TRACK_LIST <<< "${TRACKS}"
+    for track in "${TRACK_LIST[@]}"; do
+      TRACKS="${track}" run_infer
+      TRACKS="${track}" run_score
+    done
     ;;
 esac
